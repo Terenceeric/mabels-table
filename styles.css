@@ -1,0 +1,64 @@
+/* ------------------------------------------------------------------ base */
+:root { color-scheme: dark; }
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 800px at 10% -10%, rgba(99, 102, 241, 0.16), transparent 60%),
+    radial-gradient(1000px 700px at 100% 0%, rgba(217, 70, 239, 0.13), transparent 55%),
+    radial-gradient(900px 900px at 50% 120%, rgba(56, 189, 248, 0.10), transparent 60%),
+    #05070f;
+  color: #e2e8f0;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* -------------------------------------------------------------- scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.45); background-clip: content-box; }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* -------------------------------------------------------------- utilities */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- anims */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in  { animation: fadeIn .28s ease-out both; }
+.animate-slide-up { animation: slideUp .28s cubic-bezier(.22,1,.36,1) both; }
+.animate-spin-slow { animation: spin 1s linear infinite; }
+.animate-toast   { animation: toastIn .22s ease-out both; }
+
+/* ------------------------------------------------------------------ tabs */
+.input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+textarea { font-family: inherit; }
+button { font-family: inherit; }
+select.input { appearance: none; background-image: none; }

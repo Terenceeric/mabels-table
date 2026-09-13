@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b1120" />
+  <title>Mabel's Table — Digital Table Assistant</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS (Play CDN — fine for dev, swap for a build in production) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+        },
+      },
+    };
+  </script>
+
+  <!-- Custom styles -->
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- React + ReactDOM (UMD builds — expose globals React and ReactDOM) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel Standalone: we use it manually below, not via type="text/babel" src="..." -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- QR code generator (qrcode-generator — exposes window.qrcode) -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- =================================================================
+       BOOTSTRAP LOADER
+       -----------------------------------------------------------------
+       We deliberately avoid <script type="text/babel" src="script.js">
+       because VS Code's Live Preview extension breaks Babel's automatic
+       script-tag transformer.
+
+       Instead we:
+         1. fetch('script.js')  → get the raw JSX source
+         2. Babel.transform()   → compile JSX → plain JS (classic runtime)
+         3. Append the result as a normal <script> tag
+       ================================================================= -->
+  <script>
+    (function bootstrap() {
+      var rootEl = document.getElementById('root');
+
+      function fail(err) {
+        console.error("[Mabel's Table] Boot failed:", err);
+        if (!rootEl) return;
+        rootEl.innerHTML =
+          '<div style="padding:24px;font-family:monospace;color:#f87171;max-width:640px;margin:40px auto">' +
+            '<h2 style="color:#fff;margin:0 0 8px;font-family:Inter,sans-serif">Mabel&rsquo;s Table failed to start</h2>' +
+            '<p style="color:#94a3b8;margin:0 0 12px;font-family:Inter,sans-serif">' +
+              (err && err.message ? err.message : String(err)) +
+            '</p>' +
+            '<p style="color:#64748b;font-size:12px;margin:0;font-family:Inter,sans-serif">' +
+              'Open DevTools &rarr; Console for the full stack trace. ' +
+              'If you are opening this file directly (file://), please use a local ' +
+              'server like Five Server or Live Server instead.' +
+            '</p>' +
+          '</div>';
+      }
+
+      function run() {
+        // Sanity checks
+        if (typeof Babel === 'undefined')
+          return fail(new Error('Babel did not load. Check your internet connection.'));
+        if (typeof React === 'undefined' || typeof ReactDOM === 'undefined')
+          return fail(new Error('React or ReactDOM did not load. Check your internet connection.'));
+
+        // If running from file://, fetch() will fail — give a helpful message.
+        if (window.location.protocol === 'file:') {
+          return fail(new Error(
+            'This app must be served over http(s), not opened as a file. ' +
+            'Right-click index.html and choose "Open with Five Server" or "Open with Live Server".'
+          ));
+        }
+
+        fetch('script.js', { cache: 'no-store' })
+          .then(function (res) {
+            if (!res.ok) {
+              throw new Error('Failed to fetch script.js (HTTP ' + res.status + '). ' +
+                'Make sure script.js sits next to index.html.');
+            }
+            return res.text();
+          })
+          .then(function (src) {
+            var out = Babel.transform(src, {
+              presets: [['react', { runtime: 'classic' }]],
+              filename: 'script.js',
+              sourceType: 'script',
+            }).code;
+
+            var s = document.createElement('script');
+            s.textContent = out;
+            s.onerror = function (e) { fail(e); };
+            document.body.appendChild(s);
+          })
+          .catch(fail);
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', run);
+      } else {
+        run();
+      }
+    })();
+  </script>
+</body>
+</html>
