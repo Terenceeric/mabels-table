@@ -28,7 +28,9 @@ function read(key, fallback) {
 }
 function write(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
-  broadcast({ type: 'store', key });
+  // Broadcast includes the fresh value so subscribers don't have to
+  // re-read localStorage (removes any cross-tab read race entirely).
+  broadcast({ type: 'store', key, value });
 }
 
 /* ------------------------------------------------------------ realtime */
@@ -41,11 +43,27 @@ if (channel) channel.onmessage = (e) => listeners.forEach((fn) => fn(e.data));
 
 function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
+/* Storage-event fallback: fires on tabs OTHER than the writer when the
+   underlying localStorage entry changes. Provides a redundant path to
+   BroadcastChannel so admin→customer sync is never missed. */
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('storage', (e) => {
+    if (!e || !e.key) return;
+    const known = Object.values(K);
+    if (!known.includes(e.key)) return;
+    let parsed = null;
+    try { parsed = e.newValue !== null ? JSON.parse(e.newValue) : null; } catch { parsed = null; }
+    listeners.forEach((fn) => fn({ type: 'store', key: e.key, value: parsed }));
+  });
+}
+
 function useStore(key, fallback) {
   const [value, setValue] = useState(() => read(key, fallback));
   useEffect(() => {
     return subscribe((msg) => {
-      if (msg?.type === 'store' && msg.key === key) setValue(read(key, fallback));
+      if (msg?.type === 'store' && msg.key === key) {
+        setValue(msg.value !== undefined ? msg.value : read(key, fallback));
+      }
     });
   }, [key]);
   const set = useCallback((v) => {
@@ -166,6 +184,73 @@ function playChime() {
   } catch {}
 }
 
+/* --------------------------------------------------------- voice FX
+   ---------------------------------------------------------------------
+   ADDITIVE ONLY — used for the four voice-notification features:
+     • Welcome greeting when a guest registers / re-enters a table
+     • "Order / request sent" confirmation
+     • Admin-driven order status updates
+     • Request acknowledgement / resolution
+   Nothing here alters the existing playDing / playChime behaviour.
+   --------------------------------------------------------------------- */
+let voiceReady = false;
+
+function primeVoice() {
+  if (voiceReady) return;
+  try {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.getVoices();
+      voiceReady = true;
+    }
+  } catch {}
+}
+
+function speak(text, opts = {}) {
+  try {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const synth = window.speechSynthesis;
+    if (opts.interrupt !== false) {
+      try { synth.cancel(); } catch {}
+    }
+    const utter = new SpeechSynthesisUtterance(String(text));
+    utter.rate   = opts.rate   ?? 1;
+    utter.pitch  = opts.pitch  ?? 1;
+    utter.volume = opts.volume ?? 1;
+    utter.lang   = opts.lang   || 'en-US';
+
+    try {
+      const voices = synth.getVoices() || [];
+      if (voices.length) {
+        const preferred =
+          voices.find((v) => /en[-_](US|GB)/i.test(v.lang) && /female|samantha|zira|google|natural/i.test(v.name)) ||
+          voices.find((v) => /^en/i.test(v.lang)) ||
+          voices[0];
+        if (preferred) utter.voice = preferred;
+      }
+    } catch {}
+
+    synth.speak(utter);
+  } catch {}
+}
+
+/* One-shot global gesture primer — additive; does NOT replace the existing
+   AdminLayout primer. Ensures speechSynthesis + AudioContext are unlocked
+   the first time a user clicks / taps anywhere in the app. */
+if (typeof window !== 'undefined') {
+  const __mfPrimeOnce = () => {
+    try { primeAudio(); } catch {}
+    try { primeVoice(); } catch {}
+    try {
+      window.removeEventListener('click', __mfPrimeOnce);
+      window.removeEventListener('touchstart', __mfPrimeOnce);
+    } catch {}
+  };
+  try {
+    window.addEventListener('click', __mfPrimeOnce);
+    window.addEventListener('touchstart', __mfPrimeOnce);
+  } catch {}
+}
+
 /* -------------------------------------------------------------- ICONS */
 const PATHS = {
   utensils:       '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
@@ -175,7 +260,9 @@ const PATHS = {
   x:              '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   check:          '<polyline points="20 6 9 17 4 12"/>',
   'chevron-right':'<polyline points="9 18 15 12 9 6"/>',
+  'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
   'arrow-right':  '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+  'arrow-down':   '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
   refresh:        '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   trash:          '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
   pencil:         '<path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
@@ -222,6 +309,9 @@ const PATHS = {
   user:           '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
   star:           '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
   heart:          '<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>',
+  flame:          '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
+  gift:           '<polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/>',
+  'shopping-bag': '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/>',
 };
 
 const Icon = ({ name, size = 18, className = '', stroke = 2 }) => (
@@ -335,7 +425,9 @@ function AuthProvider({ children }) {
   const [user, setUser] = useState(() => read(K.session, null));
 
   useEffect(() => subscribe((msg) => {
-    if (msg?.type === 'store' && msg.key === K.session) setUser(read(K.session, null));
+    if (msg?.type === 'store' && msg.key === K.session) {
+      setUser(msg.value !== undefined ? msg.value : read(K.session, null));
+    }
   }), []);
 
   const login = useCallback((email, password) => {
@@ -602,7 +694,7 @@ function Login() {
 }
 
 /* ==================================================================== */
-/*                        PHONE GATE (NEW)                              */
+/*                        PHONE GATE                                    */
 /* ==================================================================== */
 function PhoneGate({ table, settings, onSubmit }) {
   const [phone, setPhone] = useState('');
@@ -711,7 +803,7 @@ function PhoneGate({ table, settings, onSubmit }) {
 }
 
 /* ==================================================================== */
-/*                       FEEDBACK MODAL (NEW)                           */
+/*                       FEEDBACK MODAL                                 */
 /* ==================================================================== */
 function FeedbackModal({ open, onClose, customer, lastOrder, table, onSubmit }) {
   const [rating, setRating] = useState(5);
@@ -834,6 +926,143 @@ function FeedbackModal({ open, onClose, customer, lastOrder, table, onSubmit }) 
 }
 
 /* ==================================================================== */
+/*                    BANNER CAROUSEL (lightened overlay)               */
+/* ==================================================================== */
+/* Three slides, each backed by an image you save beside index.html:
+   banner1.jpg — rice & chicken dish
+   banner2.jpg — tropical beach resort
+   banner3.jpg — grilled chicken plate
+
+   The full-image color wash has been reduced to very low opacity
+   (18–40%), and a *separate* left-side text scrim now darkens only the
+   region where the text sits. Text also carries stronger drop-shadows,
+   so titles stay crisp without dimming the whole photograph. */
+function BannerCarousel({ settings, firstName, isReturning }) {
+  const [index, setIndex] = useState(0);
+
+  const slides = useMemo(() => [
+    {
+      id: 'welcome',
+      image: 'banner1.jpg',
+      badge: isReturning ? `Welcome back, ${firstName}` : 'Welcome',
+      title: isReturning ? `Good to see you again, ${firstName}!` : "Sit back — we'll take it from here.",
+      subtitle: 'Browse the menu, order, top-up and request the bill right from your seat.',
+      Icon: isReturning ? 'heart' : 'sparkles',
+      iconCls: 'text-fuchsia-200',
+      /* Lighter wash so the photo shows through clearly */
+      gradient: 'from-indigo-950/35 via-violet-950/20 to-fuchsia-950/40',
+      blob1: 'bg-fuchsia-400/40',
+      blob2: 'bg-indigo-400/30',
+    },
+    {
+      id: 'offer',
+      image: 'banner2.jpg',
+      badge: 'Chef\'s special',
+      title: 'Fresh flavours, made with love.',
+      subtitle: 'Our kitchen is firing on all cylinders today — treat yourself to something special.',
+      Icon: 'flame',
+      iconCls: 'text-amber-200',
+      gradient: 'from-orange-950/35 via-amber-950/18 to-rose-950/40',
+      blob1: 'bg-amber-300/40',
+      blob2: 'bg-rose-400/30',
+    },
+    {
+      id: 'fast',
+      image: 'banner3.jpg',
+      badge: 'Quick & easy',
+      title: 'Order in seconds. Served in minutes.',
+      subtitle: 'Tap any dish to place your order, and track it live from your seat.',
+      Icon: 'shopping-bag',
+      iconCls: 'text-sky-100',
+      gradient: 'from-sky-950/35 via-cyan-950/18 to-teal-950/40',
+      blob1: 'bg-cyan-300/40',
+      blob2: 'bg-teal-400/30',
+    },
+  ], [firstName, isReturning]);
+
+  // Auto-advance every 5 seconds
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setIndex((i) => (i + 1) % slides.length);
+    }, 5000);
+    return () => clearInterval(iv);
+  }, [slides.length]);
+
+  return (
+    <div className="relative overflow-hidden rounded-3xl border border-white/10 shadow-2xl shadow-black/40">
+      <div
+        className="flex transition-transform duration-700 ease-out"
+        style={{ transform: `translateX(-${index * 100}%)` }}
+      >
+        {slides.map((s) => (
+          <div
+            key={s.id}
+            className={`relative flex min-h-[112px] w-full min-w-full overflow-hidden bg-gradient-to-br ${s.gradient} sm:min-h-[136px]`}
+          >
+            {/* Background image */}
+            <img
+              src={s.image}
+              alt=""
+              className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+            />
+            {/* Light color wash over the whole image (subtle tint only) */}
+            <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${s.gradient}`} />
+            {/* Left-side dark scrim — only darkens where the text sits */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 left-0 w-3/4 bg-gradient-to-r from-black/65 via-black/35 to-transparent"
+            />
+            {/* Decorative blobs */}
+            <div className={`pointer-events-none absolute -right-12 -top-12 h-44 w-44 rounded-full blur-3xl ${s.blob1}`} />
+            <div className={`pointer-events-none absolute -left-10 bottom-0 h-36 w-36 rounded-full blur-3xl ${s.blob2}`} />
+            {/* Faded giant icon on the right (desktop only) */}
+            <div className="pointer-events-none absolute right-6 top-1/2 hidden -translate-y-1/2 opacity-15 sm:block">
+              <Icon name={s.Icon} size={120} stroke={1.4} className="text-white" />
+            </div>
+
+            {/* Content */}
+            <div className="relative z-10 flex flex-col justify-center p-5 sm:p-6">
+              <div className="inline-flex w-fit items-center gap-1.5 rounded-full border border-white/25 bg-white/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-white backdrop-blur-sm"
+                   style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
+                <Icon name={s.Icon} size={10} className={s.iconCls} stroke={2.6} />
+                {s.badge}
+              </div>
+              <h1
+                className="mt-2 max-w-[85%] text-xl font-black leading-tight tracking-tight text-white sm:text-2xl"
+                style={{ textShadow: '0 2px 6px rgba(0,0,0,0.85), 0 1px 2px rgba(0,0,0,0.95)' }}
+              >
+                {s.title}
+              </h1>
+              <p
+                className="mt-1 max-w-md text-xs leading-relaxed text-white/95 sm:text-sm"
+                style={{ textShadow: '0 1px 4px rgba(0,0,0,0.85)' }}
+              >
+                {s.subtitle}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Dot indicators */}
+      <div className="absolute bottom-2.5 left-1/2 flex -translate-x-1/2 items-center gap-1.5">
+        {slides.map((_, i) => (
+          <button
+            key={i}
+            onClick={() => setIndex(i)}
+            aria-label={`Go to slide ${i + 1}`}
+            className={`h-1.5 rounded-full bg-white/70 transition-all duration-300 ${
+              i === index ? 'w-6 bg-white' : 'w-1.5 hover:bg-white/90'
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ==================================================================== */
 /*                          CUSTOMER APP — OUTER                        */
 /* ==================================================================== */
 function CustomerApp({ code }) {
@@ -891,6 +1120,22 @@ const ORDER_FLOW = {
   cancelled: { label: 'Cancelled',               icon: 'x-circle',     cls: 'text-rose-300' },
 };
 
+/* Inline keyframes for the futuristic glass buttons */
+const BUTTON_STYLE_TAG = `
+@keyframes tfShimmer {
+  0%   { transform: translateX(-120%) skewX(-12deg); }
+  100% { transform: translateX(220%) skewX(-12deg); }
+}
+@keyframes tfFloat {
+  0%, 100% { transform: translateY(0px); }
+  50%      { transform: translateY(-3px); }
+}
+@keyframes tfGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.35), 0 8px 24px -8px rgba(0,0,0,0.6); }
+  50%      { box-shadow: 0 0 0 6px rgba(255,255,255,0.05), 0 10px 28px -6px rgba(0,0,0,0.55); }
+}
+`;
+
 function CustomerAppInner({ code, table, settings, customer }) {
   const toast = useToast();
   const [items]    = useStore(K.items, []);
@@ -914,12 +1159,17 @@ function CustomerAppInner({ code, table, settings, customer }) {
   const [busy, setBusy] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
-  // Upgrade the "visits" counter once per session if it's been >6h since last visit
+  /* NEW: signals the next render to auto-scroll to the notifications area
+     after a customer submits an order or a request. Value is 'orders' or
+     'requests'; cleared as soon as the scroll has been performed. */
+  const pendingScrollRef = useRef(null);
+
+  // Bump visit counter if >6h since last visit
   useEffect(() => {
-    const now = Date.now();
+    const nowMs = Date.now();
     const lastVisit = customer.lastVisitAt ? new Date(customer.lastVisitAt).getTime() : 0;
     const sixHours = 6 * 60 * 60 * 1000;
-    if (now - lastVisit > sixHours) {
+    if (nowMs - lastVisit > sixHours) {
       const updated = {
         ...customer,
         visits: (customer.visits || 1) + 1,
@@ -930,7 +1180,7 @@ function CustomerAppInner({ code, table, settings, customer }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Show a welcome toast once on mount
+  // Welcome toast once on mount
   useEffect(() => {
     const firstName = (customer.name || '').split(' ')[0];
     if (customer.visits > 1) {
@@ -938,6 +1188,12 @@ function CustomerAppInner({ code, table, settings, customer }) {
     } else {
       setTimeout(() => toast(`Welcome, ${firstName}! 🍽️`, { tone: 'success', duration: 4500 }), 600);
     }
+    // Welcome voice alert — fires once when the guest lands on their table page.
+    setTimeout(() => {
+      try {
+        speak(`Welcome ${firstName}. Please hit any button to make a request or scroll down to our exquisite menu section to place your order. Thank you.`);
+      } catch {}
+    }, 950);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -947,6 +1203,21 @@ function CustomerAppInner({ code, table, settings, customer }) {
     [orders, table.id]
   );
   const activeOrders = tableOrders.filter((o) => o.status !== 'completed' && o.status !== 'cancelled');
+
+  /* The last completed order that still needs a rating. Drives the
+     automatic "Leave feedback" button that appears once the admin clicks
+     "Mark as completed". Mirrors the existing 1-hour window used by the
+     auto-popup effect below so behaviour stays consistent. */
+  const pendingFeedbackOrder = useMemo(() => {
+    const lastCompleted = tableOrders.find((o) => o.status === 'completed');
+    if (!lastCompleted) return null;
+    const given = read(K.feedbackGiven, {});
+    if (given[lastCompleted.id]) return null;
+    const completedAgo = Date.now() - new Date(lastCompleted.updated_at || lastCompleted.created_at).getTime();
+    if (completedAgo > 60 * 60 * 1000) return null;
+    return lastCompleted;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableOrders, now]);
 
   const myRequests = useMemo(() => {
     return requests
@@ -960,7 +1231,22 @@ function CustomerAppInner({ code, table, settings, customer }) {
       .slice(0, 6);
   }, [requests, table.id, now]);
 
-  /* Order status change → toast */
+  /* NEW: perform the deferred auto-scroll once the target section has
+     actually rendered into the DOM. Runs whenever orders or requests
+     change — the section always appears in the same commit as the state
+     update, so `getElementById` reliably finds it. */
+  useEffect(() => {
+    const target = pendingScrollRef.current;
+    if (!target) return;
+    const id = target === 'orders' ? 'orders-section' : 'requests-section';
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      pendingScrollRef.current = null;
+    }
+  }, [orders, requests]);
+
+  /* Order status change → toast (+ voice) */
   const prevStatusesRef = useRef({});
   useEffect(() => {
     const prev = prevStatusesRef.current;
@@ -970,20 +1256,28 @@ function CustomerAppInner({ code, table, settings, customer }) {
       next[o.id] = o.status;
       const old = prev[o.id];
       if (old && old !== o.status) {
-        if (o.status === 'preparing')
+        if (o.status === 'preparing') {
           toast(`👨‍🍳 Order ${o.code} — kitchen is preparing it now`, { tone: 'info', duration: 4000 });
-        else if (o.status === 'served')
+          try { speak(`Your order ${o.code} is now being prepared.`); } catch {}
+        }
+        else if (o.status === 'served') {
           toast(`🍽️ Order ${o.code} has been served. Enjoy!`,        { tone: 'success', duration: 4500 });
-        else if (o.status === 'completed')
+          try { speak(`Your order ${o.code} has been served. Enjoy your meal.`); } catch {}
+        }
+        else if (o.status === 'completed') {
           toast(`✅ Order ${o.code} completed. Thank you!`,           { tone: 'success', duration: 4000 });
-        else if (o.status === 'cancelled')
+          try { speak(`Your order ${o.code} has been completed. Thank you for dining with us.`); } catch {}
+        }
+        else if (o.status === 'cancelled') {
           toast(`❌ Order ${o.code} was cancelled`,                   { tone: 'error', duration: 4000 });
+          try { speak(`Your order ${o.code} has been cancelled.`); } catch {}
+        }
       }
     }
     prevStatusesRef.current = next;
   }, [orders, table.id, toast]);
 
-  /* Request status change → toast */
+  /* Request status change → toast (+ voice) */
   const prevReqRef = useRef({});
   useEffect(() => {
     const prev = prevReqRef.current;
@@ -993,21 +1287,20 @@ function CustomerAppInner({ code, table, settings, customer }) {
       next[r.id] = r.status;
       const old = prev[r.id];
       if (old && old !== r.status) {
-        if (r.status === 'acknowledged')
+        if (r.status === 'acknowledged') {
           toast(`👋 Your ${(REQ_META[r.type] || REQ_META.custom).label.toLowerCase()} request is being handled`, { tone: 'info', duration: 3500 });
-        else if (r.status === 'resolved')
+          try { speak(`Your ${(REQ_META[r.type] || REQ_META.custom).label.toLowerCase()} request is being handled.`); } catch {}
+        }
+        else if (r.status === 'resolved') {
           toast(`✅ ${(REQ_META[r.type] || REQ_META.custom).label} request completed`, { tone: 'success', duration: 3500 });
+          try { speak(`Your ${(REQ_META[r.type] || REQ_META.custom).label.toLowerCase()} request has been completed.`); } catch {}
+        }
       }
     }
     prevReqRef.current = next;
   }, [requests, table.id, toast]);
 
-  /* Feedback auto-trigger:
-     - No active orders
-     - No pending requests
-     - At least one completed order (within last hour)
-     - Feedback not yet given for that order
-     - Fires 30s after the last state change (approximates "customer is leaving") */
+  /* Feedback auto-trigger */
   useEffect(() => {
     if (feedbackOpen) return;
     if (activeOrders.length > 0) return;
@@ -1017,7 +1310,7 @@ function CustomerAppInner({ code, table, settings, customer }) {
     if (!lastCompleted) return;
 
     const completedAgo = Date.now() - new Date(lastCompleted.updated_at || lastCompleted.created_at).getTime();
-    if (completedAgo > 60 * 60 * 1000) return; // more than 1h ago — skip
+    if (completedAgo > 60 * 60 * 1000) return;
 
     const given = read(K.feedbackGiven, {});
     if (given[lastCompleted.id]) return;
@@ -1047,6 +1340,7 @@ function CustomerAppInner({ code, table, settings, customer }) {
       write(K.feedbackGiven, given);
     }
 
+    broadcast({ type: 'notify', channel: 'admin', event: 'feedback:new', payload: fb });
     toast('Thank you for your feedback! 💜', { tone: 'success', duration: 4000 });
   };
 
@@ -1096,6 +1390,10 @@ function CustomerAppInner({ code, table, settings, customer }) {
       const nextTables = read(K.tables, []).map((t) => t.id === table.id ? { ...t, status: 'seated' } : t);
       write(K.tables, nextTables);
 
+      // Arm the auto-scroll so it fires once the "Your orders" section
+      // mounts in the very next commit.
+      pendingScrollRef.current = 'orders';
+
       setCart({});
       setNote('');
       setCartOpen(false);
@@ -1105,11 +1403,21 @@ function CustomerAppInner({ code, table, settings, customer }) {
         { tone: 'success', duration: 5000 }
       );
       broadcast({ type: 'notify', channel: 'admin', event: 'order:new', payload: order });
+
+      // Voice alert confirming the order was sent.
+      try {
+        const summary = lines.length === 1
+          ? lines[0].item.name
+          : `${lines[0].item.name} and ${lines.length - 1} more item${lines.length - 1 > 1 ? 's' : ''}`;
+        setTimeout(() => {
+          try {
+            speak(`Your order for "${summary}" has been sent successfully. Please monitor the status from the order and request notification section. Thank you.`);
+          } catch {}
+        }, 350);
+      } catch {}
     }, 200);
   };
 
-  /* NEW: "Add More Items" — just closes the cart and scrolls to the menu.
-     Cart contents are preserved so the guest can keep adding. */
   const addMoreItems = () => {
     setCartOpen(false);
     setTimeout(() => {
@@ -1145,6 +1453,9 @@ function CustomerAppInner({ code, table, settings, customer }) {
     const nextTables = read(K.tables, []).map((t) => t.id === table.id ? { ...t, status: 'needs_attention' } : t);
     write(K.tables, nextTables);
 
+    // Arm the auto-scroll for the "Your requests" section.
+    pendingScrollRef.current = 'requests';
+
     const labels = {
       waiter: 'A waiter is on the way 👋',
       bill: 'Bill request sent 🧾',
@@ -1155,6 +1466,22 @@ function CustomerAppInner({ code, table, settings, customer }) {
     toast(labels[type] || 'Request sent', { tone: 'success' });
     setCustomOpen(false);
     setCustomMsg('');
+
+    // Voice alert confirming the request was sent.
+    try {
+      const spoken = {
+        waiter: 'waiter assistance',
+        bill: 'the bill',
+        water: 'water',
+        assistance: 'assistance',
+        custom: 'your custom request',
+      }[type] || 'assistance';
+      setTimeout(() => {
+        try {
+          speak(`Your request for ${spoken} has been sent successfully. Please monitor the status from the order and request notification section. Thank you.`);
+        } catch {}
+      }, 350);
+    } catch {}
   };
 
   const visibleCats = useMemo(() => {
@@ -1179,6 +1506,8 @@ function CustomerAppInner({ code, table, settings, customer }) {
 
   return (
     <div className="min-h-screen pb-32">
+      <style>{BUTTON_STYLE_TAG}</style>
+
       <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-4 py-3.5">
           <div className="flex min-w-0 items-center gap-3">
@@ -1200,9 +1529,9 @@ function CustomerAppInner({ code, table, settings, customer }) {
       </header>
 
       <main className="mx-auto max-w-3xl px-4">
-        {/* Welcome back banner */}
-        <section className="mt-4">
-          <div className={`flex items-center gap-3 rounded-2xl border p-3 backdrop-blur-xl ${
+        {/* Welcome back banner — pushed up closer to the header */}
+        <section className="mt-2">
+          <div className={`flex items-center gap-3 rounded-2xl border p-2.5 backdrop-blur-xl ${
             isReturning
               ? 'border-emerald-500/25 bg-gradient-to-r from-emerald-500/[0.12] to-transparent'
               : 'border-indigo-500/25 bg-gradient-to-r from-indigo-500/[0.12] to-transparent'
@@ -1225,45 +1554,79 @@ function CustomerAppInner({ code, table, settings, customer }) {
           </div>
         </section>
 
-        {/* Hero */}
-        <section className="mt-4">
-          <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-indigo-600/25 via-fuchsia-600/15 to-transparent p-6">
-            <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-fuchsia-500/20 blur-3xl" />
-            <div className="relative">
-              <div className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-white/90">
-                <Icon name="sparkles" size={11} />
-                {isReturning ? `Welcome back, ${firstName}` : 'Welcome'}
-              </div>
-              <h1 className="mt-3 text-2xl font-black leading-tight tracking-tight text-white sm:text-3xl">
-                {isReturning ? `Good to see you again, ${firstName}.` : "Sit back — we'll take it from here."}
-              </h1>
-              <p className="mt-2 max-w-md text-sm leading-relaxed text-slate-300">
-                Browse the menu, order, top-up and request the bill right from your seat.
-              </p>
-            </div>
-          </div>
+        {/* Banner carousel */}
+        <section className="mt-3">
+          <BannerCarousel settings={settings} firstName={firstName} isReturning={isReturning} />
         </section>
 
-        {/* Quick actions */}
-        <section className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {[
-            { type: 'waiter', label: 'Call Waiter', I: 'bell',    cls: 'from-indigo-500/25 to-indigo-500/5 border-indigo-400/25' },
-            { type: 'bill',   label: 'Request Bill', I: 'receipt', cls: 'from-emerald-500/25 to-emerald-500/5 border-emerald-400/25' },
-            { type: 'water',  label: 'Water',        I: 'droplet', cls: 'from-sky-500/25 to-sky-500/5 border-sky-400/25' },
-            { type: 'custom', label: 'Other',        I: 'message-plus', cls: 'from-fuchsia-500/25 to-fuchsia-500/5 border-fuchsia-400/25' },
-          ].map(({ type, label, I, cls }) => (
-            <button key={type}
-                    onClick={() => type === 'custom' ? setCustomOpen(true) : sendRequest(type)}
-                    className={`group flex flex-col items-center gap-2 rounded-2xl border bg-gradient-to-b ${cls} px-3 py-4 text-center transition active:scale-[0.97]`}>
-              <Icon name={I} size={20} className="text-white transition group-hover:scale-110" />
-              <span className="text-xs font-bold text-white">{label}</span>
+        {/* Futuristic glass 3D buttons */}
+        <section className="mt-6">
+          <div className="mb-3 flex items-center gap-2">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400">Need something?</h2>
+            <span className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
+          </div>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            {/* Call Waiter */}
+            <button
+              onClick={() => sendRequest('waiter')}
+              className="group relative flex flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border border-white/25 bg-white/[0.06] px-3 py-4 text-white backdrop-blur-2xl transition-all duration-300 hover:scale-[1.04] hover:border-white/50 active:scale-[0.97]"
+              style={{ animation: 'tfFloat 4s ease-in-out infinite, tfGlow 3s ease-in-out infinite' }}
+            >
+              <span aria-hidden className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-indigo-500/70 via-violet-500/55 to-fuchsia-500/70 opacity-90" />
+              <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 to-transparent" />
+              <span aria-hidden className="pointer-events-none absolute -inset-y-1 -left-1/2 w-1/2 bg-gradient-to-r from-transparent via-white/35 to-transparent" style={{ animation: 'tfShimmer 3.2s ease-in-out infinite' }} />
+              <span aria-hidden className="pointer-events-none absolute -bottom-6 -right-6 h-16 w-16 rounded-full bg-fuchsia-300/30 blur-2xl" />
+              <Icon name="bell" size={24} className="relative z-10 text-amber-200 drop-shadow-[0_2px_6px_rgba(251,191,36,0.6)]" stroke={2.4} />
+              <span className="relative z-10 text-[11px] font-black uppercase tracking-wide drop-shadow">Call Waiter</span>
             </button>
-          ))}
+
+            {/* Request Bill */}
+            <button
+              onClick={() => sendRequest('bill')}
+              className="group relative flex flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border border-white/25 bg-white/[0.06] px-3 py-4 text-white backdrop-blur-2xl transition-all duration-300 hover:scale-[1.04] hover:border-white/50 active:scale-[0.97]"
+              style={{ animation: 'tfFloat 4.4s ease-in-out infinite, tfGlow 3.4s ease-in-out infinite' }}
+            >
+              <span aria-hidden className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-emerald-500/70 via-teal-500/55 to-cyan-500/70 opacity-90" />
+              <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 to-transparent" />
+              <span aria-hidden className="pointer-events-none absolute -inset-y-1 -left-1/2 w-1/2 bg-gradient-to-r from-transparent via-white/35 to-transparent" style={{ animation: 'tfShimmer 3.6s ease-in-out infinite' }} />
+              <span aria-hidden className="pointer-events-none absolute -bottom-6 -right-6 h-16 w-16 rounded-full bg-cyan-300/30 blur-2xl" />
+              <Icon name="receipt" size={24} className="relative z-10 text-yellow-200 drop-shadow-[0_2px_6px_rgba(253,224,71,0.6)]" stroke={2.4} />
+              <span className="relative z-10 text-[11px] font-black uppercase tracking-wide drop-shadow">Request Bill</span>
+            </button>
+
+            {/* Water */}
+            <button
+              onClick={() => sendRequest('water')}
+              className="group relative flex flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border border-white/25 bg-white/[0.06] px-3 py-4 text-white backdrop-blur-2xl transition-all duration-300 hover:scale-[1.04] hover:border-white/50 active:scale-[0.97]"
+              style={{ animation: 'tfFloat 4.8s ease-in-out infinite, tfGlow 3.8s ease-in-out infinite' }}
+            >
+              <span aria-hidden className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-sky-500/70 via-cyan-500/55 to-blue-500/70 opacity-90" />
+              <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 to-transparent" />
+              <span aria-hidden className="pointer-events-none absolute -inset-y-1 -left-1/2 w-1/2 bg-gradient-to-r from-transparent via-white/35 to-transparent" style={{ animation: 'tfShimmer 4s ease-in-out infinite' }} />
+              <span aria-hidden className="pointer-events-none absolute -bottom-6 -right-6 h-16 w-16 rounded-full bg-blue-300/30 blur-2xl" />
+              <Icon name="droplet" size={24} className="relative z-10 text-cyan-100 drop-shadow-[0_2px_6px_rgba(165,243,252,0.7)]" stroke={2.4} />
+              <span className="relative z-10 text-[11px] font-black uppercase tracking-wide drop-shadow">Water</span>
+            </button>
+
+            {/* Other */}
+            <button
+              onClick={() => setCustomOpen(true)}
+              className="group relative flex flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border border-white/25 bg-white/[0.06] px-3 py-4 text-white backdrop-blur-2xl transition-all duration-300 hover:scale-[1.04] hover:border-white/50 active:scale-[0.97]"
+              style={{ animation: 'tfFloat 5.2s ease-in-out infinite, tfGlow 4.2s ease-in-out infinite' }}
+            >
+              <span aria-hidden className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-br from-fuchsia-500/70 via-pink-500/55 to-rose-500/70 opacity-90" />
+              <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 to-transparent" />
+              <span aria-hidden className="pointer-events-none absolute -inset-y-1 -left-1/2 w-1/2 bg-gradient-to-r from-transparent via-white/35 to-transparent" style={{ animation: 'tfShimmer 4.4s ease-in-out infinite' }} />
+              <span aria-hidden className="pointer-events-none absolute -bottom-6 -right-6 h-16 w-16 rounded-full bg-pink-300/30 blur-2xl" />
+              <Icon name="message-plus" size={24} className="relative z-10 text-pink-100 drop-shadow-[0_2px_6px_rgba(251,207,232,0.7)]" stroke={2.4} />
+              <span className="relative z-10 text-[11px] font-black uppercase tracking-wide drop-shadow">Other</span>
+            </button>
+          </div>
         </section>
 
         {/* Active orders */}
         {activeOrders.length > 0 && (
-          <section className="mt-7">
+          <section id="orders-section" className="mt-7 scroll-mt-20">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-extrabold uppercase tracking-wider text-slate-300">Your orders</h2>
               <span className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/15 px-2.5 py-1 text-[11px] font-bold uppercase text-indigo-300">
@@ -1362,7 +1725,7 @@ function CustomerAppInner({ code, table, settings, customer }) {
 
         {/* Requests tracker */}
         {myRequests.length > 0 && (
-          <section className="mt-5">
+          <section id="requests-section" className="mt-5 scroll-mt-20">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-extrabold uppercase tracking-wider text-slate-300">Your requests</h2>
               <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase ${
@@ -1446,16 +1809,6 @@ function CustomerAppInner({ code, table, settings, customer }) {
                         style={{ width: `${barWidth}%` }}
                       />
                     </div>
-                    {isOverdue && (
-                      <p className="mt-1.5 text-[10px] font-semibold text-amber-300">
-                        ⏱️ Taking a bit longer than usual — please be patient.
-                      </p>
-                    )}
-                    {isResolved && (
-                      <p className="mt-1.5 text-[10px] font-semibold text-emerald-300">
-                        ✅ Request completed by our team.
-                      </p>
-                    )}
                   </div>
                 );
               })}
@@ -1463,13 +1816,59 @@ function CustomerAppInner({ code, table, settings, customer }) {
           </section>
         )}
 
-        {/* MENU */}
-        <section id="menu-section" className="mt-8 scroll-mt-20">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-sm font-extrabold uppercase tracking-wider text-slate-300">Menu</h2>
-            <span className="text-[11px] font-semibold text-slate-500">
-              {items.filter((i) => i.is_available).length} items available
-            </span>
+        {/* Automatic feedback CTA — appears the moment the admin marks the
+            guest's most recent order as "completed". Uses the existing
+            FeedbackModal via setFeedbackOpen; nothing else is altered. */}
+        {pendingFeedbackOrder && (
+          <section className="mt-7">
+            <div className="feedback-pulse relative overflow-hidden rounded-2xl border border-fuchsia-500/35 bg-gradient-to-r from-fuchsia-500/[0.16] via-indigo-500/[0.10] to-transparent p-4 backdrop-blur-xl">
+              <div className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-fuchsia-500/20 blur-3xl" />
+              <div className="relative flex items-start gap-3">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-fuchsia-500 to-indigo-500 shadow-lg shadow-fuchsia-500/30">
+                  <Icon name="heart" size={18} className="text-white" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-extrabold text-white">
+                    How was your meal, {firstName}?
+                  </p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-slate-300">
+                    Order <span className="font-bold text-fuchsia-200">{pendingFeedbackOrder.code}</span> is complete.
+                    Share your experience — it takes 20 seconds and helps us serve you better.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setFeedbackOpen(true)}
+                    className="mt-3 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-indigo-500/30 transition hover:brightness-110 active:scale-[0.98]"
+                  >
+                    <Icon name="star" size={13} stroke={2.4} />
+                    Leave Feedback
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Menu header */}
+        <section id="menu-section" className="mt-10 scroll-mt-20">
+          <div className="mb-5 text-center">
+            <div className="inline-flex items-center gap-2 rounded-full border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-fuchsia-300">
+              <Icon name="utensils" size={11} stroke={2.6} />
+              Our kitchen
+            </div>
+            <h2 className="mt-3 text-5xl font-black uppercase tracking-tighter text-white sm:text-6xl"
+                style={{ letterSpacing: '-0.04em' }}>
+              Menu
+            </h2>
+            <div className="mx-auto mt-2 h-1 w-20 rounded-full bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-amber-400" />
+            <p className="mt-3 flex items-center justify-center gap-1.5 text-sm font-bold text-slate-200 sm:text-base">
+              <Icon name="chevron-down" size={16} className="animate-bounce text-fuchsia-400" stroke={2.6} />
+              Scroll down for the food items and place your order
+              <Icon name="chevron-down" size={16} className="animate-bounce text-fuchsia-400" stroke={2.6} />
+            </p>
+            <p className="mt-1.5 text-xs text-slate-500">
+              {items.filter((i) => i.is_available).length} delicious items available
+            </p>
           </div>
 
           <div className="relative mb-4">
@@ -2031,7 +2430,6 @@ function Dashboard() {
         ))}
       </div>
 
-      {/* Feedback summary strip */}
       {stats.feedbackCount > 0 && (
         <div className="rounded-2xl border border-fuchsia-500/25 bg-gradient-to-r from-fuchsia-500/[0.10] to-transparent p-5 backdrop-blur-xl">
           <div className="flex flex-wrap items-center justify-between gap-4">
@@ -2213,7 +2611,6 @@ function Dashboard() {
         )}
       </div>
 
-      {/* Recent feedback */}
       {recentFeedback.length > 0 && (
         <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5 backdrop-blur-xl">
           <div className="mb-4 flex items-center justify-between">
@@ -2676,7 +3073,7 @@ function RequestsPage() {
 }
 
 /* ==================================================================== */
-/*                        FEEDBACK PAGE (NEW)                           */
+/*                        FEEDBACK PAGE                                 */
 /* ==================================================================== */
 function FeedbackPage() {
   const [feedback] = useStore(K.feedback, []);
@@ -2708,7 +3105,6 @@ function FeedbackPage() {
         </div>
       </div>
 
-      {/* Summary */}
       {feedback.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5 backdrop-blur-xl">
