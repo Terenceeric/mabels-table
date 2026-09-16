@@ -62,3 +62,26 @@ body {
 textarea { font-family: inherit; }
 button { font-family: inherit; }
 select.input { appearance: none; background-image: none; }
+
+/* ================================================================
+   NEW — Feedback CTA pulse (used by the auto-appearing feedback
+   button on the customer interface once an order is completed).
+   Kept entirely in styles.css so JSX stays declarative.
+   ================================================================ */
+@keyframes feedbackPulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 rgba(217, 70, 239, 0.42),
+      0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  }
+  50% {
+    box-shadow:
+      0 0 0 12px rgba(217, 70, 239, 0.00),
+      0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  }
+}
+.feedback-pulse { animation: feedbackPulse 2.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .feedback-pulse { animation: none; }
+}
